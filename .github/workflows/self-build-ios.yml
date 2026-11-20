@@ -1,0 +1,203 @@
+# Self-build iOS: builds an unsigned PocketPal IPA from this fork.
+#
+# PocketPal is MIT-licensed, and the maintainer's README states that builds
+# from source include every PocketPal Plus feature (hands-free voice and the
+# local API server) with no purchase. Plus is only gated in the official store
+# builds, via PLUS_STORE_GATE. This workflow builds with that gate off, then
+# verifies the built app is ungated before packaging it.
+#
+# How to use: Actions tab -> "Self-build iOS (Plus included)" -> Run workflow.
+# Download the PocketPal-Unsigned-IPA artifact, unzip it, and sideload the .ipa
+# with AltStore or iLoader using your Apple ID. The app is unsigned, so it
+# expires after 7 days on a free Apple ID and needs re-signing.
+#
+# This build disables PalsHub and sign-in (they need the maintainer's backend
+# keys, which a fork doesn't have). Everything on-device works: chat, models,
+# voices, tools, and the local API server.
+#
+# Mirrors the upstream CI build-ios job, plus IPA packaging.
+
+name: Self-build iOS (Plus included)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      NODE_OPTIONS: '--max-old-space-size=8192'
+      # Explicitly ungated: only official store builds set this to 'true'.
+      PLUS_STORE_GATE: 'false'
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22.21.0'
+          cache: 'yarn'
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('yarn.lock', 'patches/**') }}
+
+      - name: Install Yarn
+        run: npm install -g yarn
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Restore enriched-markdown native assets
+        # A cached node_modules can hold a failed download. Run directly, the script
+        # reads the app's "enriched-markdown" config only through INIT_CWD.
+        run: INIT_CWD="$GITHUB_WORKSPACE" node node_modules/react-native-enriched-markdown/postinstall.mjs
+
+      - name: Create Env.xcconfig
+        run: |
+          cat > ios/Config/Env.xcconfig << 'EOL'
+          // This file contains environment-specific build settings.
+
+          GOOGLE_WEB_CLIENT_ID = dummy-web-client-id.apps.googleusercontent.com
+          REVERSED_GOOGLE_IOS_CLIENT_ID = com.googleusercontent.apps.dummy-ios-client-id
+
+          EOL
+
+      - name: Create .env file
+        run: |
+          cat > .env << 'EOL'
+          FIREBASE_FUNCTIONS_URL=https://dummy-firebase-url.com
+
+          # PalsHub/Supabase Configuration (dummy values: PalsHub and sign-in are off in this build)
+          SUPABASE_URL=https://dummy-supabase-url.supabase.co
+          SUPABASE_ANON_KEY=dummy-anon-key-for-self-builds
+          PALSHUB_API_BASE_URL=https://dummy-palshub-api.com
+
+          # App Configuration
+          APP_URL=pocketpal://app
+
+          # Feature Flags (true/false)
+          ENABLE_PALSHUB_INTEGRATION=false
+          ENABLE_AUTHENTICATION=false
+          ENABLE_OFFLINE_MODE=true
+
+          # Google Sign-In Configuration
+          GOOGLE_IOS_CLIENT_ID=dummy-ios-client-id.apps.googleusercontent.com
+          GOOGLE_WEB_CLIENT_ID=dummy-web-client-id.apps.googleusercontent.com
+          EOL
+
+      - name: Create dummy GoogleService-Info.plist
+        run: |
+          cat > ios/GoogleService-Info.plist << 'EOL'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CLIENT_ID</key>
+            <string>dummy-client-id.apps.googleusercontent.com</string>
+            <key>REVERSED_CLIENT_ID</key>
+            <string>com.googleusercontent.apps.dummy-client-id</string>
+            <key>API_KEY</key>
+            <string>dummy-api-key-for-self-builds</string>
+            <key>GCM_SENDER_ID</key>
+            <string>000000000000</string>
+            <key>PLIST_VERSION</key>
+            <string>1</string>
+            <key>BUNDLE_ID</key>
+            <string>ai.pocketpal</string>
+            <key>PROJECT_ID</key>
+            <string>dummy-project-for-self-build</string>
+            <key>STORAGE_BUCKET</key>
+            <string>dummy-project-for-self-build.appspot.com</string>
+            <key>IS_ADS_ENABLED</key>
+            <false/>
+            <key>IS_ANALYTICS_ENABLED</key>
+            <false/>
+            <key>IS_APPINVITE_ENABLED</key>
+            <false/>
+            <key>IS_GCM_ENABLED</key>
+            <true/>
+            <key>IS_SIGNIN_ENABLED</key>
+            <true/>
+            <key>GOOGLE_APP_ID</key>
+            <string>1:000000000000:ios:0000000000000000</string>
+          </dict>
+          </plist>
+          EOL
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          pod install
+          cd ..
+
+      - name: Select default Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Ensure Metal toolchain
+        run: |
+          xcrun -sdk iphoneos metal -v || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Build iOS Release (unsigned)
+        run: |
+          cd ios
+          xcodebuild \
+            -workspace PocketPal.xcworkspace \
+            -scheme PocketPal \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            2>&1 | tee ../ios-build.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::error::iOS build failed (exit $EXIT_CODE)"
+            echo "::group::Error context"
+            grep -B 5 -A 20 "error:" ../ios-build.log | tail -200 || tail -100 ../ios-build.log
+            echo "::endgroup::"
+            exit $EXIT_CODE
+          fi
+
+      - name: Verify iOS payload
+        run: scripts/verify-ios-payload.sh ios/build/Build/Products/Release-iphoneos/PocketPal.app --require-marker
+
+      - name: Verify the Plus store gate (app)
+        run: scripts/verify-plus-gate.sh ios/build/Build/Products/Release-iphoneos/PocketPal.app --ungated
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/Payload
+          cp -r ios/build/Build/Products/Release-iphoneos/PocketPal.app build/Payload/
+          cd build
+          zip -r PocketPal-Plus-Unsigned.ipa Payload
+          echo "Unsigned IPA packaged."
+
+      - name: Verify the Plus store gate (IPA)
+        run: scripts/verify-plus-gate.sh build/PocketPal-Plus-Unsigned.ipa --ungated
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketPal-Unsigned-IPA
+          path: build/PocketPal-Plus-Unsigned.ipa
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: ios-build.log
+          if-no-files-found: ignore
