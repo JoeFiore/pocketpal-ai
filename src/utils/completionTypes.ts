@@ -158,4 +158,13 @@ export interface CompletionEngine {
     callback?: (data: CompletionStreamData) => void,
   ): Promise<CompletionResult>;
   stopCompletion(): Promise<void>;
+  /**
+   * Clears the model's KV cache and recurrent state, if the engine holds
+   * one. Local engines must implement this: hybrid models (e.g. Qwen3.5's
+   * Gated DeltaNet layers) keep recurrent state that cannot be partially
+   * removed, so without a reset between unrelated requests the state
+   * accumulates and generation degrades to empty replies. Remote engines
+   * leave it undefined.
+   */
+  clearCache?(): Promise<void>;
 }

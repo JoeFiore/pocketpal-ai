@@ -203,6 +203,10 @@ export async function serveChatCompletion(
   lease.signal.addEventListener('abort', onAbort, {once: true});
   const unsubscribeClose = channel.onClose(() => lease.abort());
   try {
+    // Fresh cache for every API request. Without this, hybrid models
+    // accumulate recurrent state across unrelated requests until
+    // generation silently returns empty replies (see LocalCompletionEngine.clearCache).
+    await lease.engine.clearCache?.();
     if (request.stream) {
       await completeStreaming(run, request.includeUsage);
     } else {

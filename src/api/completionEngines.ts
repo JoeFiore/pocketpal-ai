@@ -57,6 +57,19 @@ export class LocalCompletionEngine implements CompletionEngine {
   async stopCompletion(): Promise<void> {
     await this.context.stopCompletion();
   }
+
+  /**
+   * Fully resets the KV cache and the model's recurrent state.
+   * `clearCache(true)` zeroes the cache's tensor data, which is what
+   * hybrid models need: their recurrent (DeltaNet) state lives in the
+   * cache data and is not reset by a metadata-only clear. Called before
+   * each Local API request so unrelated requests never contaminate each
+   * other. Costs a full prefill on the next completion (no prefix-cache
+   * reuse), which is the price of correct generation across requests.
+   */
+  async clearCache(): Promise<void> {
+    await this.context.clearCache(true);
+  }
 }
 
 export interface RemoteEngineOptions {
