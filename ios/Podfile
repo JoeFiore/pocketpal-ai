@@ -182,6 +182,13 @@ target 'PocketPal' do
   # Mustache template rendering for iOS Shortcuts
   pod 'GRMustache.swift'
 
+  # onnxruntime-c: the published podspec downloads from download.onnxruntime.ai,
+  # whose TLS certificate broke (hostname mismatch) in Nov 2026, failing every
+  # pod install. This local podspec is identical except it downloads the same
+  # archive from Microsoft's older Azure host, with a pinned SHA256.
+  # Remove this override once download.onnxruntime.ai works again.
+  pod 'onnxruntime-c', :podspec => 'onnxruntime-c.podspec.json'
+
   # Force llama-rn and whisper-rn to build as static libraries. Both vendor a
   # ggml fork whose headers share filenames (ggml.h, ggml-cpu.h, ...); under
   # use_frameworks! the framework header-copy phases otherwise collide
